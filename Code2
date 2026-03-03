@@ -1,0 +1,133 @@
+#include "mbed.h"
+
+// Define inputs for the 6 tactile switches (0-5) connected to pins D2-D7
+DigitalIn sw0(D2, PullDown);
+DigitalIn sw1(D3, PullDown);
+DigitalIn sw2(D4, PullDown);
+DigitalIn sw3(D5, PullDown);
+DigitalIn sw4(D6, PullDown);
+DigitalIn sw5(D7, PullDown);
+
+// Define LED outputs on the Nucleo Board
+DigitalOut ledWarning(LED1);     // Green LED for slowly blinking warning
+DigitalOut ledLockCont(LED2);    // Blue LED for continuous lockdown
+DigitalOut ledLockBlink(LED3);   // Red LED for intermittent lockdown
+DigitalOut logLED1(D8);          // Event log counter bit 0
+DigitalOut logLED2(D9);          // Event log counter bit 1
+DigitalOut logLED3(D10);         // Event log counter bit 2
+
+// System states
+enum SystemState { NORMAL, WARNING, LOCKDOWN };
+SystemState currentState = NORMAL;
+
+// Tracking variables
+int incorrectAttempts = 0;
+int lockdownEventCounter = 0;
+int enteredCode[4] = {-1, -1, -1, -1};
+int codeIndex = 0;
+
+// Predefined 4-digit passcodes
+const int userCode[4] = {0, 1, 2, 3};
+const int adminCode[4] = {5, 4, 3, 2};
+
+Timer stateTimer;
+
+// Helper function to read the 6 buttons
+int readSwitch() {
+    if (sw0) return 0;
+    if (sw1) return 1;
+    if (sw2) return 2;
+    if (sw3) return 3;
+    if (sw4) return 4;
+    if (sw5) return 5;
+    return -1;
+}
+
+// Function to compare arrays
+bool checkCode(const int* expected) {
+    for (int i = 0; i < 4; i++) {
+        if (enteredCode[i] != expected[i]) return false;
+    }
+    return true;
+}
+
+// Function to update the event log display
+void displayLogCounter() {
+    logLED1 = (lockdownEventCounter & 0x01);
+    logLED2 = (lockdownEventCounter & 0x02) >> 1;
+    logLED3 = (lockdownEventCounter & 0x04) >> 2;
+}
+
+int main() {
+    while (true) {
+        int pressed = readSwitch();
+       
+        // Debounce and capture input
+        if (pressed != -1) {
+            enteredCode[codeIndex] = pressed;
+            codeIndex++;
+            thread_sleep_for(300); // Debounce delay
+        }
+
+        switch (currentState) {
+            case NORMAL:
+                if (codeIndex == 4) {
+                    if (checkCode(userCode)) {
+                        incorrectAttempts = 0; // Reset counter on successful entry
+                    } else {
+                        incorrectAttempts++;
+                        if (incorrectAttempts == 3) {
+                            currentState = WARNING;
+                            stateTimer.start();
+                        } else if (incorrectAttempts == 4) {
+                            currentState = LOCKDOWN;
+                            lockdownEventCounter++;
+                            displayLogCounter();
+                            stateTimer.start();
+                        }
+                    }
+                    codeIndex = 0; // Reset input buffer
+                }
+                break;
+               
+            case WARNING:
+                // 30 seconds warning mode: block new inputs
+                if (stateTimer.read() < 30.0) {
+                    ledWarning = !ledWarning;  
+                    thread_sleep_for(1000); // Slowly blinking LED
+                    codeIndex = 0;          // Ignore any input during this period
+                } else {
+                    stateTimer.stop();
+                    stateTimer.reset();
+                    ledWarning = 0;
+                    currentState = NORMAL;  // Return to normal, waiting for 4th attempt
+                }
+                break;
+               
+            case LOCKDOWN:
+                ledLockCont = 1; // Stay on continuously
+               
+                // Intermittent blink for 1 minute
+                if (stateTimer.read() < 60.0) {
+                    ledLockBlink = !ledLockBlink;
+                    thread_sleep_for(250);
+                } else {
+                    ledLockBlink = 0;
+                }
+               
+                // Only allow admin override
+                if (codeIndex == 4) {
+                    if (checkCode(adminCode)) {
+                        currentState = NORMAL;
+                        incorrectAttempts = 0;
+                        stateTimer.stop();
+                        stateTimer.reset();
+                        ledLockCont = 0;
+                        ledLockBlink = 0;
+                    }
+                    codeIndex = 0; // Ignore all other inputs
+                }
+                break;
+        }
+    }
+}
