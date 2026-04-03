@@ -1,133 +1,165 @@
 #include "mbed.h"
 
-// Define inputs for the 6 tactile switches (0-5) connected to pins D2-D7
-DigitalIn sw0(D2, PullDown);
-DigitalIn sw1(D3, PullDown);
-DigitalIn sw2(D4, PullDown);
-DigitalIn sw3(D5, PullDown);
-DigitalIn sw4(D6, PullDown);
-DigitalIn sw5(D7, PullDown);
+// PullDown ensures the pin reads 0 (LOW) when the button is not being pressed.
+DigitalIn btn0(D2, PullDown); 
+DigitalIn btn1(D3, PullDown);
+DigitalIn btn2(D4, PullDown); 
+DigitalIn btn3(D5, PullDown);
+DigitalIn btn4(D6, PullDown); 
+DigitalIn btn5(D7, PullDown);
 
-// Define LED outputs on the Nucleo Board
-DigitalOut ledWarning(LED1);     // Green LED for slowly blinking warning
-DigitalOut ledLockCont(LED2);    // Blue LED for continuous lockdown
-DigitalOut ledLockBlink(LED3);   // Red LED for intermittent lockdown
-DigitalOut logLED1(D8);          // Event log counter bit 0
-DigitalOut logLED2(D9);          // Event log counter bit 1
-DigitalOut logLED3(D10);         // Event log counter bit 2
+DigitalOut warningLED(LED1);     
+DigitalOut lockdownSolid(LED2);  
+DigitalOut lockdownBlink(LED3);  
 
-// System states
-enum SystemState { NORMAL, WARNING, LOCKDOWN };
-SystemState currentState = NORMAL;
+DigitalOut logLED1(D8);          
+DigitalOut logLED2(D9);          
+DigitalOut logLED3(D10);         
 
-// Tracking variables
-int incorrectAttempts = 0;
-int lockdownEventCounter = 0;
-int enteredCode[4] = {-1, -1, -1, -1};
-int codeIndex = 0;
 
-// Predefined 4-digit passcodes
-const int userCode[4] = {0, 1, 2, 3};
-const int adminCode[4] = {5, 4, 3, 2};
+// Passcode configurations
+int userCode[4] = {0, 1, 2, 3};         // Standard access code
+int adminCode[4] = {5, 4, 3, 2};        // Override code for lockdown
+int enteredCode[4] = {-1, -1, -1, -1};  // Buffer to store the user's current input
 
-Timer stateTimer;
+// System trackers
+int wrong_attempts = 0;   // Counts consecutive failed logins
+int lockdown_count = 0;   // Tracks total number of lockdowns for the event log
+int press_count = 0;      // Tracks how many digits the user has currently entered
 
-// Helper function to read the 6 buttons
-int readSwitch() {
-    if (sw0) return 0;
-    if (sw1) return 1;
-    if (sw2) return 2;
-    if (sw3) return 3;
-    if (sw4) return 4;
-    if (sw5) return 5;
-    return -1;
+int system_mode = 0; 
+
+
+int read_buttons() {
+    if (btn0 == 1) return 0; 
+    if (btn1 == 1) return 1; 
+    if (btn2 == 1) return 2;
+    if (btn3 == 1) return 3; 
+    if (btn4 == 1) return 4; 
+    if (btn5 == 1) return 5;
+    
+    return -1; // Default return if nothing is pressed
 }
 
-// Function to compare arrays
-bool checkCode(const int* expected) {
+bool check_passcode(int expectedCode[]) {
     for (int i = 0; i < 4; i++) {
-        if (enteredCode[i] != expected[i]) return false;
+        if (enteredCode[i] != expectedCode[i]) {
+            return false; // Stop checking on the first wrong digit
+        }
     }
-    return true;
+    return true; 
 }
 
-// Function to update the event log display
-void displayLogCounter() {
-    logLED1 = (lockdownEventCounter & 0x01);
-    logLED2 = (lockdownEventCounter & 0x02) >> 1;
-    logLED3 = (lockdownEventCounter & 0x04) >> 2;
+void update_log_leds() {
+    logLED1 = (lockdown_count & 0x01);       // Isolate Bit 0
+    logLED2 = (lockdown_count & 0x02) >> 1;  // Isolate Bit 1 and shift to position 0
+    logLED3 = (lockdown_count & 0x04) >> 2;  // Isolate Bit 2 and shift to position 0
 }
+
 
 int main() {
     while (true) {
-        int pressed = readSwitch();
-       
-        // Debounce and capture input
-        if (pressed != -1) {
-            enteredCode[codeIndex] = pressed;
-            codeIndex++;
-            thread_sleep_for(300); // Debounce delay
-        }
+        
+        switch (system_mode) {
 
-        switch (currentState) {
-            case NORMAL:
-                if (codeIndex == 4) {
-                    if (checkCode(userCode)) {
-                        incorrectAttempts = 0; // Reset counter on successful entry
+
+            // STATE 0: NORMAL OPERATING MODE
+            case 0: { 
+                int pressed = read_buttons();
+                
+                if (pressed != -1) {
+                    enteredCode[press_count] = pressed;
+                    press_count++;
+                    thread_sleep_for(200); // 200ms delay prevents double-registering one press
+                }
+                
+                // Evaluate the code once 4 digits have been entered
+                if (press_count == 4) {
+                    
+                    if (check_passcode(userCode) == true) {
+                        wrong_attempts = 0; // If passcode input is successful, reset the strike counter
                     } else {
-                        incorrectAttempts++;
-                        if (incorrectAttempts == 3) {
-                            currentState = WARNING;
-                            stateTimer.start();
-                        } else if (incorrectAttempts == 4) {
-                            currentState = LOCKDOWN;
-                            lockdownEventCounter++;
-                            displayLogCounter();
-                            stateTimer.start();
+                        wrong_attempts++;   
+                    }
+                    
+                    press_count = 0; // Clear the input buffer for the next attempt
+                    
+                    if (wrong_attempts == 3) {
+                        system_mode = 1; // Trigger 30s warning
+                    } 
+                    else if (wrong_attempts >= 4) {
+                        system_mode = 2; // Trigger 60s lockdown
+                        lockdown_count++;
+                        update_log_leds(); // Update the binary tracker
+                    }
+                }
+                break;
+            }
+
+
+            case 1: { 
+                for (int i = 0; i < 30; i++) {
+                    warningLED = !warningLED; 
+                    thread_sleep_for(1000);   
+                }
+                
+                // Warning period is over. Reset to normal to await the 4th attempt
+                warningLED = 0; 
+                system_mode = 0; 
+                break;
+            }
+
+
+            case 2: { 
+                lockdownSolid = 1; 
+
+                for (int i = 0; i < 600; i++) {
+                    
+                    // Blink the red LED every 5th cycle (every 500ms)
+                    if (i % 5 == 0) {
+                        lockdownBlink = !lockdownBlink; 
+                    }
+                    
+
+                    int admin_press = read_buttons();
+                    
+                    if (admin_press != -1) {
+                        enteredCode[press_count] = admin_press;
+                        press_count++;
+                        thread_sleep_for(200); // Debounce
+                    }
+                    
+
+                    if (press_count == 4) {
+                        
+                        if (check_passcode(adminCode) == true) {
+                            // If admin code matches, reset the system immediately.
+                            wrong_attempts = 0;
+                            system_mode = 0; 
+                            press_count = 0;
+                            
+                            lockdownSolid = 0;
+                            lockdownBlink = 0;
+                            
+                            break; // Break completely out of the 60-second loop
+                        } else {
+                            // Wrong admin code entered. Clear buffer and keep waiting.
+                            press_count = 0; 
                         }
                     }
-                    codeIndex = 0; // Reset input buffer
+                    
+                    thread_sleep_for(100); 
+                }
+                
+                // If the 60 seconds naturally expires without a successful admin override:
+                // Return to normal mode but do not reset the wrong_attempts counter.
+                if (system_mode == 2) { 
+                    system_mode = 0; 
+                    lockdownSolid = 0; 
+                    lockdownBlink = 0;
                 }
                 break;
-               
-            case WARNING:
-                // 30 seconds warning mode: block new inputs
-                if (stateTimer.read() < 30.0) {
-                    ledWarning = !ledWarning;  
-                    thread_sleep_for(1000); // Slowly blinking LED
-                    codeIndex = 0;          // Ignore any input during this period
-                } else {
-                    stateTimer.stop();
-                    stateTimer.reset();
-                    ledWarning = 0;
-                    currentState = NORMAL;  // Return to normal, waiting for 4th attempt
-                }
-                break;
-               
-            case LOCKDOWN:
-                ledLockCont = 1; // Stay on continuously
-               
-                // Intermittent blink for 1 minute
-                if (stateTimer.read() < 60.0) {
-                    ledLockBlink = !ledLockBlink;
-                    thread_sleep_for(250);
-                } else {
-                    ledLockBlink = 0;
-                }
-               
-                // Only allow admin override
-                if (codeIndex == 4) {
-                    if (checkCode(adminCode)) {
-                        currentState = NORMAL;
-                        incorrectAttempts = 0;
-                        stateTimer.stop();
-                        stateTimer.reset();
-                        ledLockCont = 0;
-                        ledLockBlink = 0;
-                    }
-                    codeIndex = 0; // Ignore all other inputs
-                }
-                break;
+            }
         }
     }
 }
