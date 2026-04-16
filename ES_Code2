@@ -1,3 +1,8 @@
+/* Title: Getting Ready to Program the First Implementation of the Smart Home
+Author: Samkelo Mareka
+Date: 03/02/2026
+Student ID: 24004894
+*/
 #include "mbed.h"
 
 // PullDown ensures the pin reads 0 (LOW) when the button is not being pressed.
